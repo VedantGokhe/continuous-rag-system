@@ -1,270 +1,296 @@
+"""
+Continuous-RAG Document Ingestion (v2 — Fixed)
+
+Fixes applied:
+  Issue #1:  Sentence-aware chunking (never cuts mid-sentence)
+  Issue #4:  Cosine similarity via IndexFlatIP (accurate confidence scores)
+  Issue #6:  Better chunks = better retrieval of specific facts
+  Issue #10: Text cleaning removes PDF artifacts before embedding
+"""
 import os
-import hashlib
-import faiss
-import pickle
 import re
-import shutil
+import hashlib
+import numpy as np
+import faiss
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
-from app.database import conn, cursor
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-
-# Storage paths
-if os.path.exists("/opt/render/project/src/data"):
-    BASE_DIR = "/opt/render/project/src/data"
-else:
-    BASE_DIR = "."
-
-INDEX_DIR = os.path.join(BASE_DIR, "faiss_index")
-INDEX_PATH = os.path.join(INDEX_DIR, "index.bin")
-META_PATH = os.path.join(INDEX_DIR, "meta.pkl")
+from app.config import (
+    embedding_model, DOCUMENTS_DIR, INDEX_DIR, INDEX_PATH,
+    CHUNK_SIZE, CHUNK_OVERLAP, EMBEDDING_DIMENSION, logger
+)
+from app import database as db
 
 
-def get_file_hash(filepath):
-    """Calculate file hash"""
+# ─────────────────────────────────────────────
+# Text Cleaning (Fix #10)
+# ─────────────────────────────────────────────
+
+def clean_text(text: str) -> str:
+    """Remove PDF artifacts, decorative chars, normalize whitespace."""
+    # Remove decorative unicode (lines, blocks, shapes)
+    text = re.sub(r'[━─═▬▄▀░▒▓█■□▪▫●○◆◇★☆►◄▲▼•·]+', ' ', text)
+    # Normalize whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Remove very short lines (likely headers/footers/page numbers)
+    lines = text.split('\n')
+    cleaned = [l.strip() for l in lines if len(l.strip()) > 5]
+    return '\n'.join(cleaned).strip()
+
+
+# ─────────────────────────────────────────────
+# Sentence-Aware Chunking (Fix #1, #6)
+# ─────────────────────────────────────────────
+
+def split_into_sentences(text: str) -> list[str]:
+    """Split text into sentences/clauses."""
+    # Split on sentence endings followed by space+capital, or double newlines
+    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])|(?<=[.!?])\n|\n{2,}', text)
+    return [p.strip() for p in parts if p.strip() and len(p.strip()) > 10]
+
+
+def create_chunks(page_texts: list[str]) -> list[dict]:
+    """
+    Sentence-aware chunking — groups complete sentences into chunks.
+    Never cuts mid-sentence. Maintains overlap for context continuity.
+    """
+    chunks = []
+    chunk_idx = 0
+
+    for page_num, page_text in enumerate(page_texts):
+        cleaned = clean_text(page_text)
+        if not cleaned:
+            continue
+
+        sentences = split_into_sentences(cleaned)
+        if not sentences:
+            continue
+
+        current_sentences = []
+        current_length = 0
+
+        for sentence in sentences:
+            if current_length + len(sentence) > CHUNK_SIZE and current_sentences:
+                # Save current chunk
+                chunk_text = " ".join(current_sentences)
+                if len(chunk_text) > 30:
+                    chunks.append({
+                        "text": chunk_text,
+                        "index": chunk_idx,
+                        "page_num": page_num + 1,
+                    })
+                    chunk_idx += 1
+                # Keep last N sentences for overlap
+                current_sentences = current_sentences[-CHUNK_OVERLAP:]
+                current_length = sum(len(s) for s in current_sentences)
+
+            current_sentences.append(sentence)
+            current_length += len(sentence)
+
+        # Last chunk on this page
+        if current_sentences:
+            chunk_text = " ".join(current_sentences)
+            if len(chunk_text) > 30:
+                chunks.append({
+                    "text": chunk_text,
+                    "index": chunk_idx,
+                    "page_num": page_num + 1,
+                })
+                chunk_idx += 1
+
+    return chunks
+
+
+# ─────────────────────────────────────────────
+# Utility Functions
+# ─────────────────────────────────────────────
+
+def get_file_hash(filepath: str) -> str:
+    """Compute SHA-256 hash of a file for change detection."""
     with open(filepath, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def extract_base_name_and_version(filename):
-    """
-    Extract base filename and version number.
-    Handles multiple patterns:
-    - 'Policy_v4.pdf' -> ('Policy.pdf', 4)
-    - 'Policy_v4.pdf.pdf' -> ('Policy.pdf', 4)
-    - 'Enterprise_HR_Policy_v3.pdf.pdf' -> ('Enterprise_HR_Policy.pdf', 3)
-    """
-    # Remove .pdf.pdf if present
+def extract_base_name_and_version(filename: str) -> tuple[str, int]:
+    """Extract base filename and version number."""
     clean_name = filename
     if filename.endswith('.pdf.pdf'):
-        clean_name = filename[:-4]  # Remove one .pdf
-    
-    # Pattern to match version number
-    pattern = r'^(.+?)_v(\d+)(\.pdf)$'
-    match = re.match(pattern, clean_name)
-    
+        clean_name = filename[:-4]
+    match = re.match(r'^(.+?)_v(\d+)(\.pdf)$', clean_name)
     if match:
-        base_name = match.group(1) + match.group(3)
-        version_num = int(match.group(2))
-        return base_name, version_num
-    
-    # No version found - treat as version 1
+        return match.group(1) + match.group(3), int(match.group(2))
     return clean_name, 1
 
 
-def get_latest_version_files(files):
-    """
-    Return only the highest version of each document.
-    Example: ['Policy_v1.pdf', 'Policy_v2.pdf', 'Policy_v4.pdf'] 
-    Returns: {'Policy.pdf': ('Policy_v4.pdf', 4)}
-    """
-    file_versions = {}
-    
-    for file in files:
-        if not file.endswith('.pdf'):
-            continue
-            
-        base_name, version = extract_base_name_and_version(file)
-        
-        if base_name not in file_versions:
-            file_versions[base_name] = {'file': file, 'version': version}
-        else:
-            if version > file_versions[base_name]['version']:
-                file_versions[base_name] = {'file': file, 'version': version}
-    
-    return {base: (info['file'], info['version']) for base, info in file_versions.items()}
+def extract_text_from_pdf(filepath: str) -> tuple[str, int, list[str]]:
+    """Extract text from PDF. Returns (full_text, page_count, page_texts)."""
+    reader = PdfReader(filepath)
+    page_texts = [page.extract_text() or "" for page in reader.pages]
+    return "\n".join(page_texts), len(reader.pages), page_texts
 
 
-def nuclear_clean():
-    """
-    NUCLEAR OPTION: Delete EVERYTHING and start fresh.
-    This guarantees no old data remains.
-    """
-    print("\n" + "="*80)
-    print("💣 NUCLEAR CLEAN - DELETING ALL OLD DATA")
-    print("="*80)
-    
-    # Delete entire faiss_index directory
-    if os.path.exists(INDEX_DIR):
-        shutil.rmtree(INDEX_DIR)
-        print(f"   ✅ Deleted entire directory: {INDEX_DIR}")
-    
-    # Recreate empty directory
+# ─────────────────────────────────────────────
+# FAISS Index — Cosine Similarity (Fix #4)
+# ─────────────────────────────────────────────
+
+def load_or_create_index():
+    """Load or create FAISS index using Inner Product (= cosine for normalized vectors)."""
     os.makedirs(INDEX_DIR, exist_ok=True)
-    print(f"   ✅ Created fresh directory: {INDEX_DIR}")
-    
-    # Delete all records from database
-    cursor.execute("DELETE FROM documents")
-    conn.commit()
-    print("   ✅ Wiped database clean")
-    
-    print("="*80)
-
-
-def process_documents():
-    """
-    BULLETPROOF processing:
-    1. ALWAYS do nuclear clean first
-    2. Find latest versions only
-    3. Build fresh index from scratch
-    4. Save to fresh files
-    """
-    
-    print("\n" + "🚀"*40)
-    print("BULLETPROOF CONTINUOUS RAG - GUARANTEED FRESH BUILD")
-    print("🚀"*40 + "\n")
-    
-    # Get all PDF files
-    if not os.path.exists("documents"):
-        print("❌ ERROR: documents/ folder not found")
-        return {"status": "error", "message": "No documents folder"}
-    
-    all_files = [f for f in os.listdir("documents") if f.endswith('.pdf')]
-    
-    if not all_files:
-        print("❌ ERROR: No PDF files found in documents/")
-        return {"status": "error", "message": "No PDF files"}
-    
-    print(f"📂 Found {len(all_files)} PDF file(s) in documents/\n")
-    
-    # Get only latest versions
-    latest_files = get_latest_version_files(all_files)
-    
-    print("📋 FILE ANALYSIS:")
-    print("-" * 80)
-    
-    # Show all files with their status
-    files_by_base = {}
-    for file in all_files:
-        base_name, version = extract_base_name_and_version(file)
-        if base_name not in files_by_base:
-            files_by_base[base_name] = []
-        files_by_base[base_name].append((file, version))
-    
-    for base_name in sorted(files_by_base.keys()):
-        print(f"\n   Base: {base_name}")
-        file_list = sorted(files_by_base[base_name], key=lambda x: x[1])
-        for file, version in file_list:
-            latest_file, latest_version = latest_files[base_name]
-            if file == latest_file:
-                print(f"      ✅ WILL USE:  {file:45} (v{version}) ← LATEST")
-            else:
-                print(f"      ❌ IGNORED:   {file:45} (v{version}) - OLD VERSION")
-    
-    print("-" * 80)
-    print(f"\n📊 SUMMARY: Using {len(latest_files)} file(s), ignoring {len(all_files) - len(latest_files)} old version(s)\n")
-    
-    # STEP 1: NUCLEAR CLEAN (always!)
-    nuclear_clean()
-    
-    # STEP 2: BUILD FRESH INDEX
-    print("\n" + "="*80)
-    print("🔨 BUILDING FRESH INDEX FROM SCRATCH")
-    print("="*80 + "\n")
-    
-    index = faiss.IndexFlatL2(384)
-    metadata = []
-    
-    for base_name, (filename, version) in latest_files.items():
-        filepath = os.path.join("documents", filename)
-        
-        print(f"📄 Processing: {filename} (v{version})")
-        
+    if os.path.exists(INDEX_PATH):
         try:
-            # Read PDF
-            reader = PdfReader(filepath)
-            text = ""
-            for page in reader.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    text += extracted
-            
-            if not text.strip():
-                print(f"   ⚠️  No text extracted - skipping")
-                continue
-            
-            # Create chunks
-            chunk_size = 500
-            overlap = 50
-            chunks = []
-            
-            for i in range(0, len(text), chunk_size - overlap):
-                chunk = text[i:i + chunk_size].strip()
-                if chunk:
-                    chunks.append(chunk)
-            
-            if not chunks:
-                print(f"   ⚠️  No chunks created - skipping")
-                continue
-            
-            print(f"   📦 Created {len(chunks)} chunks")
-            
-            # Generate embeddings
-            print(f"   🧠 Generating embeddings...")
-            embeddings = model.encode(chunks)
-            
-            # Add to index
-            start_idx = index.ntotal
-            index.add(embeddings)
-            
-            # Save metadata with actual version number
-            for i, chunk in enumerate(chunks):
-                metadata.append({
-                    "filename": filename,
-                    "base_name": base_name,
-                    "text": chunk,
-                    "version": version,
-                    "chunk_id": i
-                })
-            
-            # Save to database with actual version number
-            file_hash = get_file_hash(filepath)
-            cursor.execute(
-                "INSERT INTO documents (filename, file_hash, version) VALUES (?, ?, ?)",
-                (filename, file_hash, version)
-            )
-            conn.commit()
-            
-            print(f"   ✅ Successfully indexed {len(chunks)} chunks (version {version})\n")
-            
+            index = faiss.read_index(INDEX_PATH)
+            logger.info("Loaded FAISS index with %d vectors", index.ntotal)
+            return index
         except Exception as e:
-            print(f"   ❌ ERROR: {str(e)}\n")
-            continue
-    
-    # STEP 3: SAVE TO FRESH FILES
-    print("="*80)
-    print("💾 SAVING INDEX AND METADATA")
-    print("="*80)
-    
-    # Save FAISS index
+            logger.warning("Failed to load index, creating new: %s", e)
+
+    # IndexFlatIP = Inner Product = cosine similarity for normalized vectors
+    base_index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+    index = faiss.IndexIDMap(base_index)
+    logger.info("Created new FAISS IndexIDMap (cosine similarity)")
+    return index
+
+
+def save_index(index):
+    """Save FAISS index to disk."""
+    os.makedirs(INDEX_DIR, exist_ok=True)
     faiss.write_index(index, INDEX_PATH)
-    print(f"   ✅ Saved index: {INDEX_PATH}")
-    
-    # Save metadata
-    with open(META_PATH, "wb") as f:
-        pickle.dump(metadata, f)
-    print(f"   ✅ Saved metadata: {META_PATH}")
-    
-    print("\n" + "="*80)
-    print("✅ BUILD COMPLETE")
-    print("="*80)
-    print(f"   • Total embeddings: {index.ntotal}")
-    print(f"   • Total chunks: {len(metadata)}")
-    print(f"   • Files indexed: {len(latest_files)}")
-    
-    # Show which versions were indexed
-    versions_info = [f"{filename} (v{version})" for base, (filename, version) in latest_files.items()]
-    print(f"   • Latest versions indexed:")
-    for info in sorted(versions_info):
-        print(f"      - {info}")
-    
-    print("="*80 + "\n")
-    
+    logger.info("Saved FAISS index (%d vectors)", index.ntotal)
+
+
+def add_to_index(index, chunk_texts: list[str], chunk_ids: list[int]):
+    """Encode, normalize, and add to FAISS."""
+    if not chunk_texts:
+        return
+    embeddings = embedding_model.encode(chunk_texts)
+    embeddings = np.array(embeddings, dtype=np.float32)
+    faiss.normalize_L2(embeddings)  # Normalize for cosine similarity
+    ids = np.array(chunk_ids, dtype=np.int64)
+    index.add_with_ids(embeddings, ids)
+    logger.info("Added %d normalized vectors to index", len(chunk_ids))
+
+
+def remove_from_index(index, chunk_ids: list[int]):
+    """Remove vectors from index by IDs."""
+    if not chunk_ids:
+        return
+    ids = np.array(chunk_ids, dtype=np.int64)
+    index.remove_ids(ids)
+    logger.info("Removed %d vectors from index", len(chunk_ids))
+
+
+# ─────────────────────────────────────────────
+# Core Ingestion Logic
+# ─────────────────────────────────────────────
+
+def get_latest_version_files(files: list[str]) -> dict:
+    """Return only the latest version of each base document."""
+    file_versions = {}
+    for f in files:
+        if not f.endswith('.pdf'):
+            continue
+        base_name, version = extract_base_name_and_version(f)
+        if base_name not in file_versions or version > file_versions[base_name][1]:
+            file_versions[base_name] = (f, version)
+    return file_versions
+
+
+def ingest_single_document(filename: str, index) -> dict:
+    """Ingest a single document with hash-based change detection."""
+    filepath = os.path.join(DOCUMENTS_DIR, filename)
+    if not os.path.exists(filepath):
+        return {"filename": filename, "action": "skipped", "reason": "file not found"}
+
+    new_hash = get_file_hash(filepath)
+    stored_hash = db.get_document_hash(filename)
+
+    if stored_hash and stored_hash == new_hash:
+        logger.info("SKIP (unchanged): %s", filename)
+        return {"filename": filename, "action": "skipped", "reason": "unchanged (hash match)"}
+
+    base_name, version = extract_base_name_and_version(filename)
+    old_text = db.get_document_text(filename)
+
+    if stored_hash:
+        logger.info("UPDATE (hash changed): %s", filename)
+        old_chunk_ids = db.get_chunk_ids_for_document(filename)
+        remove_from_index(index, old_chunk_ids)
+        db.delete_document(filename)
+        action = "updated"
+    else:
+        logger.info("NEW: %s", filename)
+        action = "added"
+
+    try:
+        full_text, page_count, page_texts = extract_text_from_pdf(filepath)
+    except Exception as e:
+        logger.error("Failed to read PDF %s: %s", filename, e)
+        return {"filename": filename, "action": "error", "reason": str(e)}
+
+    if not full_text.strip():
+        return {"filename": filename, "action": "skipped", "reason": "no text extracted"}
+
+    chunks = create_chunks(page_texts)
+    if not chunks:
+        return {"filename": filename, "action": "skipped", "reason": "no chunks created"}
+
+    doc_id = db.insert_document(
+        filename=filename, base_name=base_name, file_hash=new_hash,
+        version=version, full_text=full_text, page_count=page_count,
+        chunk_count=len(chunks)
+    )
+    chunk_ids = db.insert_chunks(doc_id, chunks)
+    add_to_index(index, [c["text"] for c in chunks], chunk_ids)
+
+    logger.info("  ✓ %s: %d chunks, %d pages (v%d)", filename, len(chunks), page_count, version)
     return {
-        "status": "success",
-        "total_embeddings": index.ntotal,
-        "total_chunks": len(metadata),
-        "files_indexed": len(latest_files),
-        "latest_versions": [f"{filename} (v{version})" for base, (filename, version) in latest_files.items()]
+        "filename": filename, "action": action, "version": version,
+        "chunks": len(chunks), "pages": page_count,
+        "old_text": old_text, "new_text": full_text,
+    }
+
+
+def process_documents() -> dict:
+    """Main ingestion pipeline with hash-based incremental indexing."""
+    logger.info("=" * 60)
+    logger.info("STARTING INCREMENTAL DOCUMENT SYNC")
+    logger.info("=" * 60)
+
+    os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+    all_files = [f for f in os.listdir(DOCUMENTS_DIR) if f.endswith('.pdf')]
+    if not all_files:
+        return {"status": "warning", "message": "No PDF files found", "files": []}
+
+    latest_files = get_latest_version_files(all_files)
+    index = load_or_create_index()
+
+    results = []
+    for base_name, (filename, version) in latest_files.items():
+        results.append(ingest_single_document(filename, index))
+
+    # Remove deleted files
+    db_docs = db.get_all_documents()
+    disk_files = {info[0] for info in latest_files.values()}
+    for doc in db_docs:
+        if doc[1] not in disk_files:
+            old_ids = db.get_chunk_ids_for_document(doc[1])
+            remove_from_index(index, old_ids)
+            db.delete_document(doc[1])
+            results.append({"filename": doc[1], "action": "removed"})
+
+    save_index(index)
+
+    added = sum(1 for r in results if r.get("action") == "added")
+    updated = sum(1 for r in results if r.get("action") == "updated")
+    skipped = sum(1 for r in results if r.get("action") == "skipped")
+    removed = sum(1 for r in results if r.get("action") == "removed")
+
+    logger.info("SYNC: +%d added, ~%d updated, =%d skipped, -%d removed | Total: %d vectors",
+                added, updated, skipped, removed, index.ntotal)
+
+    return {
+        "status": "success", "total_vectors": index.ntotal,
+        "files_processed": len(results), "added": added, "updated": updated,
+        "skipped": skipped, "removed": removed, "details": results,
+        "latest_versions": [{"filename": f, "version": v} for _, (f, v) in latest_files.items()]
     }
