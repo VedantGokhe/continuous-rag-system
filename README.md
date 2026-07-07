@@ -348,14 +348,17 @@ continuous-rag/
 │   ├── package.json
 │   └── vite.config.ts
 │
-├── documents/                 # PDF storage (auto-watched)
-├── faiss_index/               # FAISS vector index (persistent)
-├── gcp-key.json               # Google Cloud service account (not in git)
-├── .env                       # API keys (GROQ_API_KEY)
+├── sample_docs/               # Pre-built test PDFs (included in repo)
+│   ├── HR_Policy.pdf
+│   ├── Finance_Guidelines.pdf
+│   ├── IT_Security_Policy.pdf
+│   ├── Travel_and_Remote_Work_Abroad.pdf
+│   └── stage2/HR_Policy.pdf   # Modified version for change detection testing
+├── documents/                 # PDF storage (auto-watched, not in git)
+├── .env                       # API keys (not in git)
+├── gcp-key.json               # Google Cloud credentials (not in git)
 ├── requirements.txt
-├── generate_test_pdfs.py      # Script to generate sample policy PDFs
 ├── test_queries.txt           # Evaluation test queries with results
-├── stage1_findings.txt        # Testing findings and fix log
 ├── Dockerfile
 ├── docker-compose.yml
 └── README.md
@@ -415,13 +418,13 @@ Character-based chunking cuts mid-sentence, breaking semantic meaning. Sentence-
 
 ## 🐛 Testing & Iteration Log
 
-The system went through systematic testing documented in `stage1_findings.txt`:
+The system went through 3 stages of systematic testing and 16+ bug fixes:
 
 | Stage | Issues Found | Issues Fixed |
 |-------|-------------|-------------|
-| Stage 1 v1 | 11 issues (FAISS miss, no memory, confidence bugs) | All 11 fixed |
-| Stage 1 v2 | 5 new issues (JSON errors, panel sync, confidence formula) | All 5 fixed |
-| Stage 2 | Evaluation pipeline (expired models, dict errors, verdict issues) | All fixed |
+| Stage 1 v1 | 11 issues (FAISS retrieval miss, no conversation memory, confidence score bugs) | All 11 fixed |
+| Stage 1 v2 | 5 new issues (JSON parse errors, panel sync, confidence formula) | All 5 fixed |
+| Stage 2 | Evaluation pipeline (expired models, dict sanitization, verdict non-determinism) | All fixed |
 
 Key fixes: sentence-aware chunking, hybrid retrieval, cross-encoder reranking, conversation memory, compliance post-check, Gemini hybrid architecture.
 
