@@ -263,20 +263,21 @@ docker-compose up --build
 | `GET` | `/changes` | Document change reports |
 | `GET` | `/document/{filename}` | Get full document text |
 
-### Example Queries
+### Try These Queries in the UI
 
-```bash
-# Simple Q&A (→ Retriever Agent, Groq ~1s)
-curl "http://localhost:8000/query?q=How%20many%20sick%20days%20do%20employees%20get"
+Open http://localhost:5173 and type these in the chat:
 
-# Compliance Check (→ Compliance Agent, Gemini Flash ~10s)
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"q": "Can I work remotely from Dubai for 2 months?"}'
+| Query | Expected Result |
+|-------|----------------|
+| `How many sick days do employees get per year?` | **Q&A** → "12 days" from HR_Policy.pdf |
+| `What is the home office setup allowance?` | **Q&A** → "$500 one-time" from Finance_Guidelines.pdf |
+| `Can I work remotely from Dubai for 2 months?` | **Compliance** → ❌ DENIED (UAE is Tier 3) |
+| `Am I allowed to use ChatGPT for my work tasks?` | **Compliance** → ❌ DENIED (Prohibited) |
+| `How long can I work remotely from Germany?` | **Compliance** → ✅ CONDITIONAL (Tier 1, 30 days max) |
+| `Which are the tier 1 countries to work from?` | **Compliance** → ✅ ALLOWED (UK, Canada, Germany, Australia, Singapore, Japan) |
+| `What changed in the latest policy update?` | **Changes** → Shows diff report if documents were updated |
 
-# Run Evaluation (→ Gemini Pro judge, ~3 min)
-curl http://localhost:8000/eval
-```
+> 💡 **Tip:** Click on any assistant message to see its sources, findings, and agent trace in the right panel.
 
 ---
 
