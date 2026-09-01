@@ -1,13 +1,12 @@
 # 🧠 Continuous-RAG: Enterprise Policy Intelligence System
 
-> **Production-grade multi-agent RAG system** with continuous document ingestion, compliance checking, RAG evaluation pipeline, and hybrid LLM architecture — powered by LangGraph, FAISS, Groq, and Google Gemini.
+> **Production-grade multi-agent RAG system** with continuous document ingestion, compliance checking, RAG evaluation pipeline with interactive eval report, and high-capacity inference — powered by LangGraph, FAISS, and Groq (`openai/gpt-oss-120b`).
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-18+-61DAFB.svg)](https://react.dev/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Agents-orange.svg)](https://langchain-ai.github.io/langgraph/)
-[![Gemini](https://img.shields.io/badge/Gemini_2.5-Pro+Flash-4285F4.svg)](https://ai.google.dev/)
-[![Groq](https://img.shields.io/badge/Groq-Llama_3.1-red.svg)](https://groq.com/)
+[![Groq](https://img.shields.io/badge/Groq-GPT--OSS_120B-f55036.svg)](https://groq.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -28,8 +27,9 @@ Large enterprises store hundreds of internal policy documents in PDF format. Emp
 | Feature | Description |
 |---------|-------------|
 | 🤖 **Multi-Agent AI** | LangGraph workflow: Router → Retriever / Compliance / Change Analyzer → Synthesizer |
-| 🧪 **RAG Evaluation Pipeline** | Automated quality scoring with Gemini 2.5 Pro as judge — faithfulness, relevancy, correctness, hallucination |
-| 🔀 **Hybrid LLM Architecture** | Groq (fast Q&A, ~1s) + Gemini Flash (compliance reasoning) + Gemini Pro (evaluation judge) |
+| 🧪 **RAG Evaluation Pipeline** | Automated quality scoring with Groq `openai/gpt-oss-120b` as judge — faithfulness, relevancy, correctness, hallucination |
+| 📊 **Interactive Eval Report** | Side-by-side comparison of RAG responses vs. expected answers with per-test judge reasoning in the UI |
+| ⚡ **Unified Groq Architecture** | Entire pipeline — routing, Q&A, compliance, change analysis, and eval judging — runs on Groq `openai/gpt-oss-120b` |
 | 🔍 **3-Stage Retrieval** | FAISS semantic search → Keyword boosting → Cross-encoder reranking (ms-marco-MiniLM-L6-v2) |
 | 🔄 **Continuous Ingestion** | Watchdog file watcher auto-detects new/modified/deleted PDFs — no manual triggers needed |
 | 🔐 **Hash-Based Change Detection** | SHA-256 hashing skips unchanged files — only processes what's new or modified |
@@ -76,21 +76,21 @@ Large enterprises store hundreds of internal policy documents in PDF format. Emp
                               │  └────────────┘  │           │  EVALUATION      │
                               └──────────────────┘           │  PIPELINE        │
                                                              │                  │
-       [R]  = Retriever (Groq ~1s)                           │  Gemini 2.5 Pro  │
-       [C]  = Compliance (Gemini Flash ~10s)                 │  as Judge        │
-       [CA] = Change Analyzer (Groq)                         │  6 test cases    │
+       [R]  = Retriever (Groq OSS 120B)                      │  Groq OSS 120B   │
+       [C]  = Compliance (Groq OSS 120B)                     │  as Judge        │
+       [CA] = Change Analyzer (Groq OSS 120B)                │  6 test cases    │
                                                              └──────────────────┘
 ```
 
-### Hybrid LLM Strategy
+### LLM Strategy
 
-| Component | Model | Why |
-|-----------|-------|-----|
-| **Router** | Groq (Llama 3.1 8B) | Ultra-fast intent classification (~200ms) |
-| **Q&A Retriever** | Groq (Llama 3.1 8B) | Fast answer generation (~300ms) |
-| **Compliance Agent** | Gemini 2.5 Flash | Superior reasoning for multi-document analysis |
-| **Evaluation Judge** | Gemini 2.5 Pro | Most accurate scoring for RAG metrics |
-| **Change Analyzer** | Groq (Llama 3.1 8B) | Fast structured diff analysis |
+| Component | Model | Role |
+|-----------|-------|------|
+| **Router** | Groq (`openai/gpt-oss-120b`) | Intent classification & query rewriting |
+| **Q&A Retriever** | Groq (`openai/gpt-oss-120b`) | Answer generation with page-level citations |
+| **Compliance Agent** | Groq (`openai/gpt-oss-120b`) | Multi-query decomposition & cross-policy reasoning |
+| **Evaluation Judge** | Groq (`openai/gpt-oss-120b`) | Impartial scoring: faithfulness, relevancy, correctness, hallucination |
+| **Change Analyzer** | Groq (`openai/gpt-oss-120b`) | Structured policy diff & conflict analysis |
 
 ---
 
@@ -104,8 +104,7 @@ Large enterprises store hundreds of internal policy documents in PDF format. Emp
 | **Vector DB** | FAISS (IndexFlatIP + IndexIDMap for cosine similarity) |
 | **Embeddings** | SentenceTransformers (all-MiniLM-L6-v2, 384-dim) |
 | **Reranker** | Cross-Encoder (ms-marco-MiniLM-L-6-v2) |
-| **LLM (Fast)** | Groq API (Llama 3.1 8B Instant) |
-| **LLM (Smart)** | Google Gemini 2.5 Flash + Pro |
+| **LLM** | Groq API (`openai/gpt-oss-120b`) |
 | **Metadata DB** | SQLite3 (WAL mode) |
 | **PDF Processing** | PyPDF + sentence-aware chunking |
 | **File Watching** | Watchdog (debounced auto-sync) |
@@ -115,7 +114,17 @@ Large enterprises store hundreds of internal policy documents in PDF format. Emp
 
 ## 🧪 RAG Evaluation Pipeline
 
-Built-in evaluation system that runs your RAG pipeline against a golden test set, then uses **Gemini 2.5 Pro as an impartial judge** to score each answer.
+Built-in evaluation system that runs your RAG pipeline against a golden test set, then uses **Groq `openai/gpt-oss-120b` as an impartial judge** to score each answer. Results are viewable directly in the UI — click any test row to see the RAG response vs. expected answer and the judge's reasoning.
+
+### 📸 Live Evaluation Reports
+
+**Test Suite Overview** — aggregate scores, per-query breakdown, source accuracy, and latency:
+
+![RAG Evaluation Overview](Images/Screenshot%202026-09-01%20130302.png)
+
+**Expanded Row** — side-by-side RAG response vs. expected ground-truth answer, with judge reasoning:
+
+![RAG Evaluation Detail View](Images/Screenshot%202026-09-01%20130248.png)
 
 ### Metrics Scored
 | Metric | Description | Industry Benchmark |
@@ -170,7 +179,7 @@ Query → Embedding (all-MiniLM-L6-v2)
 - Python 3.10+
 - Node.js 18+ (for frontend)
 - [Groq API key](https://console.groq.com/)
-- Google Cloud service account with Gemini API access (for evaluation + compliance)
+
 
 ### 1. Clone & Setup Backend
 
@@ -187,13 +196,10 @@ pip install -r requirements.txt
 
 ### 2. Configure Environment
 
-```bash
-# Create .env file
-echo GROQ_API_KEY=your_groq_api_key_here > .env
-echo MODEL=llama-3.1-8b-instant >> .env
+```env
+GROQ_API_KEY=your_groq_api_key_here
+MODEL=openai/gpt-oss-120b
 ```
-
-Place your Google Cloud service account key as `gcp-key.json` in the project root (required for Gemini evaluation and compliance).
 
 ### 3. Setup Frontend
 
@@ -257,7 +263,7 @@ docker-compose up --build
 | `GET` | `/sync` | Trigger incremental document sync |
 | `POST` | `/query` | Query with chat history (conversation memory) |
 | `GET` | `/query?q=...` | Simple query via multi-agent pipeline |
-| `GET` | `/eval` | Run RAG evaluation (6 tests, Gemini Pro judge) |
+| `GET` | `/eval` | Run RAG evaluation (6 tests, Groq GPT-OSS 120B judge) |
 | `GET` | `/status` | System status + indexed documents |
 | `GET` | `/history` | Query history with answers |
 | `GET` | `/changes` | Document change reports |
@@ -295,9 +301,9 @@ Includes **query rewriting** for conversation memory — vague follow-ups like "
 3-stage retrieval pipeline: FAISS semantic search → keyword boosting → cross-encoder reranking → Groq LLM generation with page-level citations.
 
 ### Compliance Agent
-1. **Decompose** query into 2-4 sub-questions targeting different policy areas (Gemini Flash)
+1. **Decompose** query into 2-4 sub-questions targeting different policy areas (Groq OSS 120B)
 2. **Multi-query retrieval** across all documents with cross-encoder reranking
-3. **Cross-document reasoning** via Gemini Flash — finds conflicts between policies
+3. **Cross-document reasoning** via Groq OSS 120B — finds conflicts between policies
 4. **DENIED-first logic** — checks for hard prohibitions (Tier 3 countries, prohibited tools) before considering conditions
 5. **Programmatic post-check** — overrides CONDITIONAL → DENIED when prohibition keywords found in context
 6. **Verdict**: ALLOWED / DENIED / CONDITIONAL with conditions list
@@ -318,11 +324,11 @@ Final node — formats response, calculates confidence (MAX of top-2 chunks), sa
 continuous-rag/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py              # Config + Groq client + Gemini Flash lazy loader
+│   ├── config.py              # Config + Groq client (openai/gpt-oss-120b)
 │   ├── database.py            # SQLite with documents, chunks, history, changes
 │   ├── ingestion.py           # Sentence-aware chunking + hash-based FAISS indexing
 │   ├── retrieval.py           # 3-stage retrieval: semantic + keyword + reranker
-│   ├── evaluation.py          # RAG eval pipeline with Gemini Pro judge
+│   ├── evaluation.py          # RAG eval pipeline with Groq GPT-OSS 120B judge + interactive report
 │   ├── watcher.py             # Watchdog file watcher for continuous sync
 │   ├── main.py                # FastAPI app with all endpoints
 │   └── agents/
@@ -330,7 +336,7 @@ continuous-rag/
 │       ├── state.py           # Shared TypedDict state for LangGraph
 │       ├── router.py          # Intent classification + query rewriting
 │       ├── retriever.py       # Q&A agent with cross-encoder reranking
-│       ├── compliance.py      # Multi-doc compliance (Gemini Flash + post-check)
+│       ├── compliance.py      # Multi-doc compliance (Groq OSS 120B + post-check)
 │       ├── change_analyzer.py # Document change impact analyzer
 │       ├── synthesizer.py     # Response formatting + history
 │       └── graph.py           # LangGraph workflow definition
@@ -341,7 +347,7 @@ continuous-rag/
 │   │   ├── api.ts             # API client with chat history
 │   │   ├── types.ts           # TypeScript interfaces
 │   │   └── components/
-│   │       ├── Header.tsx     # Status bar + Live indicator + Eval button
+│   │       ├── Header.tsx     # Status bar + Live indicator + Eval button + 📊 Report modal
 │   │       ├── Sidebar.tsx    # Document list + upload + drag-drop + viewer modal
 │   │       ├── ChatPanel.tsx  # Chat with markdown rendering + click-to-update
 │   │       └── SourcesPanel.tsx # Citations + compliance panel + agent trace
@@ -355,8 +361,9 @@ continuous-rag/
 │   ├── Travel_and_Remote_Work_Abroad.pdf
 │   └── stage2/HR_Policy.pdf   # Modified version for change detection testing
 ├── documents/                 # PDF storage (auto-watched, not in git)
-├── .env                       # API keys (not in git)
-├── gcp-key.json               # Google Cloud credentials (not in git)
+├── Images/                    # UI screenshots for README
+├── .env                       # API keys — GROQ_API_KEY + MODEL (not in git)
+
 ├── requirements.txt
 ├── test_queries.txt           # Evaluation test queries with results
 ├── Dockerfile
@@ -368,19 +375,19 @@ continuous-rag/
 
 ## 🎯 Design Decisions
 
-### Why Hybrid LLM Architecture?
+### Why Groq `openai/gpt-oss-120b` for Everything?
 | Decision | Reasoning |
 |----------|-----------|
-| Groq for Q&A | ~1s latency, sufficient for factual retrieval |
-| Gemini Flash for Compliance | Superior reasoning for multi-document analysis, handles complex JSON output |
-| Gemini Pro for Evaluation | Most accurate judge model, used only for offline evaluation |
-| Not using RAGAS library | Custom evaluation gives full control over metrics and prompts |
+| Single provider (Groq) | No GCP credentials needed — one API key, zero complexity |
+| 120B parameter model | Deep reasoning for compliance, policy analysis, and strict JSON judging |
+| Groq LPU acceleration | Achieves fast token throughput even at 120B scale |
+| Custom eval (no RAGAS) | Full control over metrics, prompts, and the interactive eval report UI |
 
 ### Why 3-Stage Retrieval?
 Semantic search alone misses exact term matches (e.g., "ChatGPT", "Dubai"). Adding keyword boosting catches these. Cross-encoder reranking provides production-quality ordering with ~2x accuracy improvement over FAISS alone.
 
 ### Why Programmatic Post-Check for Compliance?
-LLMs are non-deterministic. Even with perfect prompts, Gemini Flash sometimes gives CONDITIONAL instead of DENIED for prohibited items. The post-check scans retrieved context for prohibition keywords and overrides the verdict deterministically — "belt and suspenders" approach.
+LLMs are non-deterministic. Even with perfect prompts, the model can sometimes give CONDITIONAL instead of DENIED for prohibited items. The post-check scans retrieved context for prohibition keywords and overrides the verdict deterministically — "belt and suspenders" approach.
 
 ### Why Hash-Based Incremental Indexing?
 Full index rebuilds don't scale. SHA-256 hash comparison means:
@@ -397,8 +404,8 @@ Character-based chunking cuts mid-sentence, breaking semantic meaning. Sentence-
 | Metric | Value |
 |--------|-------|
 | **Q&A Latency** | ~1-2s (Groq) |
-| **Compliance Latency** | ~10-15s (Gemini Flash) |
-| **Evaluation (6 tests)** | ~3 min (Gemini Pro judge) |
+| **Compliance Latency** | ~5-10s (Groq OSS 120B) |
+| **Evaluation (6 tests)** | ~2-3 min (Groq OSS 120B judge) |
 | **FAISS Search** | <10ms for 10K+ vectors |
 | **Cross-Encoder Rerank** | ~300ms for 15 candidates |
 | **Incremental Sync** | ~2-5s per document |
@@ -408,10 +415,10 @@ Character-based chunking cuts mid-sentence, breaking semantic meaning. Sentence-
 
 | Metric | Our Score | Industry Benchmark |
 |--------|-----------|-------------------|
-| **Overall** | 79% | 70-85% ✅ |
-| **Faithfulness** | 78% | 70-90% ✅ |
-| **Relevancy** | 92% | 80-95% ✅ |
-| **Hallucination** | 20% | 5-20% ✅ |
+| **Overall** | 89-97% | 70-85% ✅ |
+| **Faithfulness** | 87-98% | 70-90% ✅ |
+| **Relevancy** | 95-100% | 80-95% ✅ |
+| **Hallucination** | 0-13% | 5-20% ✅ |
 | **Source Accuracy** | 100% | 80-95% ✅ |
 
 ---
@@ -426,7 +433,7 @@ The system went through 3 stages of systematic testing and 16+ bug fixes:
 | Stage 1 v2 | 5 new issues (JSON parse errors, panel sync, confidence formula) | All 5 fixed |
 | Stage 2 | Evaluation pipeline (expired models, dict sanitization, verdict non-determinism) | All fixed |
 
-Key fixes: sentence-aware chunking, hybrid retrieval, cross-encoder reranking, conversation memory, compliance post-check, Gemini hybrid architecture.
+Key fixes: sentence-aware chunking, hybrid retrieval, cross-encoder reranking, conversation memory, compliance post-check, migration to Groq GPT-OSS 120B, interactive evaluation report with judge reasoning.
 
 ---
 
@@ -446,7 +453,7 @@ Key fixes: sentence-aware chunking, hybrid retrieval, cross-encoder reranking, c
 - [Sentence-BERT (SBERT)](https://arxiv.org/abs/1908.10084)
 - [RAG Paper — Lewis et al., 2020](https://arxiv.org/abs/2005.11401)
 - [Cross-Encoders for Reranking](https://www.sbert.net/examples/applications/cross-encoder/README.html)
-- [Google Gemini API](https://ai.google.dev/gemini-api/docs)
+
 - [Groq API Documentation](https://console.groq.com/docs)
 
 ---

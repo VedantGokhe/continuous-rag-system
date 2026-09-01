@@ -9,21 +9,21 @@ Fixes applied:
 import os
 import re
 import numpy as np
-import faiss
 
+from app import vector_store
 from app.config import embedding_model, reranker_model, INDEX_PATH, EMBEDDING_DIMENSION, logger
 from app import database as db
 
 
 def load_index():
-    """Load FAISS index from disk."""
-    if not os.path.exists(INDEX_PATH):
-        logger.warning("No FAISS index found at %s", INDEX_PATH)
+    """Load vector index from disk."""
+    if not os.path.exists(INDEX_PATH) and not os.path.exists(INDEX_PATH + ".npz"):
+        logger.warning("No vector index found at %s", INDEX_PATH)
         return None
     try:
-        return faiss.read_index(INDEX_PATH)
+        return vector_store.read_index(INDEX_PATH)
     except Exception as e:
-        logger.error("Failed to load FAISS index: %s", e)
+        logger.error("Failed to load vector index: %s", e)
         return None
 
 
@@ -75,7 +75,7 @@ def retrieve(query: str, top_k: int = 5) -> list[dict]:
     # Encode and normalize query
     query_vector = embedding_model.encode([query])
     query_vector = np.array(query_vector, dtype=np.float32)
-    faiss.normalize_L2(query_vector)
+    vector_store.normalize_L2(query_vector)
 
     # Search FAISS — get more than needed for re-ranking
     search_k = min(top_k * 8, index.ntotal)

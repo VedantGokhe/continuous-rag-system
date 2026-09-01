@@ -19,7 +19,7 @@ logger = logging.getLogger("continuous-rag")
 
 # --- API Keys ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-MODEL = os.getenv("MODEL", "llama-3.1-8b-instant")
+MODEL = os.getenv("MODEL", "openai/gpt-oss-120b")
 
 # --- Embedding Config ---
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -38,26 +38,8 @@ DB_PATH = os.path.join(".", "metadata.db")
 # --- Groq Client (singleton) — used for Router, Q&A Retriever, Change Analyzer ---
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# --- Gemini Flash Client (lazy-loaded) — used for Compliance Agent (complex reasoning) ---
-GCP_KEY_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gcp-key.json")
-_gemini_flash_model = None
-
-def get_gemini_flash():
-    """Lazy-load Gemini 2.5 Flash for compliance reasoning. Avoids startup delay."""
-    global _gemini_flash_model
-    if _gemini_flash_model is None:
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GCP_KEY_PATH
-        from google.oauth2 import service_account
-        credentials = service_account.Credentials.from_service_account_file(
-            GCP_KEY_PATH,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        import vertexai
-        vertexai.init(project="ambitio-ds-v2", location="us-central1", credentials=credentials)
-        from vertexai.generative_models import GenerativeModel
-        _gemini_flash_model = GenerativeModel("gemini-2.5-flash")
-        logger.info("Gemini 2.5 Flash loaded for compliance reasoning")
-    return _gemini_flash_model
+# NOTE: Compliance agent uses Groq (same as other agents).
+# Gemini/GCP integration has been removed — no google-cloud packages required.
 
 # --- Embedding Model (singleton - loaded once, used everywhere) ---
 logger.info("Loading embedding model: %s ...", EMBEDDING_MODEL_NAME)

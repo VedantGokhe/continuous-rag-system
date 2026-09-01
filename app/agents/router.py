@@ -123,13 +123,25 @@ def router_node(state: AgentState) -> AgentState:
         )
 
         raw = response.choices[0].message.content.strip()
-        
+
+        # Normalize unicode chars GPT-OSS injects that break json.loads()
+        import re
+        raw = re.sub(r'[\u00a0\u202f\u2000-\u200b]+', ' ', raw)  # non-breaking spaces
+        raw = re.sub(r'[\u2011\u2012\u2013\u2014\u2015]', '-', raw)  # unicode dashes
+
         # Parse JSON response — handle markdown code blocks
-        if "```" in raw:
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        
+
+        # Extract JSON object if buried in prose
+        json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+        if json_match:
+            raw = json_match.group(0)
+
         result = json.loads(raw)
         intent = result.get("intent", "question")
         reasoning = result.get("reasoning", "")

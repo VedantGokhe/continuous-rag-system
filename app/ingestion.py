@@ -11,9 +11,9 @@ import os
 import re
 import hashlib
 import numpy as np
-import faiss
 from pypdf import PdfReader
 
+from app import vector_store
 from app.config import (
     embedding_model, DOCUMENTS_DIR, INDEX_DIR, INDEX_PATH,
     CHUNK_SIZE, CHUNK_OVERLAP, EMBEDDING_DIMENSION, logger
@@ -134,37 +134,37 @@ def extract_text_from_pdf(filepath: str) -> tuple[str, int, list[str]]:
 # ─────────────────────────────────────────────
 
 def load_or_create_index():
-    """Load or create FAISS index using Inner Product (= cosine for normalized vectors)."""
+    """Load or create vector index using Inner Product (= cosine for normalized vectors)."""
     os.makedirs(INDEX_DIR, exist_ok=True)
-    if os.path.exists(INDEX_PATH):
+    if os.path.exists(INDEX_PATH) or os.path.exists(INDEX_PATH + ".npz"):
         try:
-            index = faiss.read_index(INDEX_PATH)
-            logger.info("Loaded FAISS index with %d vectors", index.ntotal)
+            index = vector_store.read_index(INDEX_PATH)
+            logger.info("Loaded vector index with %d vectors", index.ntotal)
             return index
         except Exception as e:
             logger.warning("Failed to load index, creating new: %s", e)
 
     # IndexFlatIP = Inner Product = cosine similarity for normalized vectors
-    base_index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
-    index = faiss.IndexIDMap(base_index)
-    logger.info("Created new FAISS IndexIDMap (cosine similarity)")
+    base_index = vector_store.IndexFlatIP(EMBEDDING_DIMENSION)
+    index = vector_store.IndexIDMap(base_index)
+    logger.info("Created new Vector IndexIDMap (cosine similarity)")
     return index
 
 
 def save_index(index):
-    """Save FAISS index to disk."""
+    """Save vector index to disk."""
     os.makedirs(INDEX_DIR, exist_ok=True)
-    faiss.write_index(index, INDEX_PATH)
-    logger.info("Saved FAISS index (%d vectors)", index.ntotal)
+    vector_store.write_index(index, INDEX_PATH)
+    logger.info("Saved vector index (%d vectors)", index.ntotal)
 
 
 def add_to_index(index, chunk_texts: list[str], chunk_ids: list[int]):
-    """Encode, normalize, and add to FAISS."""
+    """Encode, normalize, and add to vector store."""
     if not chunk_texts:
         return
     embeddings = embedding_model.encode(chunk_texts)
     embeddings = np.array(embeddings, dtype=np.float32)
-    faiss.normalize_L2(embeddings)  # Normalize for cosine similarity
+    vector_store.normalize_L2(embeddings)  # Normalize for cosine similarity
     ids = np.array(chunk_ids, dtype=np.int64)
     index.add_with_ids(embeddings, ids)
     logger.info("Added %d normalized vectors to index", len(chunk_ids))
@@ -203,8 +203,10 @@ def ingest_single_document(filename: str, index) -> dict:
 
     new_hash = get_file_hash(filepath)
     stored_hash = db.get_document_hash(filename)
+    stored_chunk_ids = db.get_chunk_ids_for_document(filename)
+    index_has_vectors = (index.ntotal > 0) and (len(stored_chunk_ids) > 0)
 
-    if stored_hash and stored_hash == new_hash:
+    if stored_hash and stored_hash == new_hash and index_has_vectors:
         logger.info("SKIP (unchanged): %s", filename)
         return {"filename": filename, "action": "skipped", "reason": "unchanged (hash match)"}
 

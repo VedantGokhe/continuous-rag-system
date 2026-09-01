@@ -24,6 +24,43 @@ def synthesizer_node(state: AgentState) -> AgentState:
     sources = state.get("sources", [])
     confidence = state.get("confidence", 0.0)
 
+    # ── Clean GPT-OSS formatting artifacts ──
+    import re
+    if answer:
+        # STEP 1: Normalize ALL unicode spaces → regular ASCII space
+        answer = re.sub(r'[\u00a0\u202f\u2000-\u200b\u3000]+', ' ', answer)
+
+        # STEP 2: Normalize ALL unicode dashes → ASCII hyphen '-'
+        # (GPT-OSS uses \u2011 non-breaking hyphen, \u2013 en-dash, \u2014 em-dash)
+        answer = re.sub(r'[\u2011\u2012\u2013\u2014\u2015\u2212]', '-', answer)
+
+        # STEP 3: Smart bracket extractor for 【value - source】 patterns
+        # GPT-OSS puts factual values inside 【...】 like 【16 days — HR_Policy.pdf】
+        def _extract_bracket(m):
+            inner = m.group(1).strip()
+            # Case 1: Bracket contains a citation separator (—, -, ,) before a .pdf filename
+            # e.g. '6 days — HR_Policy.pdf' or '16 days - HR_Policy.pdf, Page 1'
+            match = re.search(r'^(.*?)\s*[\u2011-\u2015\u2212\-,;]\s*[A-Za-z0-9_\-]+\.pdf.*$', inner, flags=re.IGNORECASE)
+            if match:
+                val = match.group(1).strip()
+                if val and not val.lower().endswith('.pdf'):
+                    return val
+
+            # Case 2: Bracket is a pure citation tag (e.g. 'HR_Policy.pdf', 'HR_Policy.pdf, Page 1')
+            if re.match(r'^[A-Za-z0-9_\-]+\.pdf', inner, flags=re.IGNORECASE):
+                return ''
+
+            # Case 3: Bracket contains normal sentence text (e.g. 'Upload the updated HR_Policy.pdf')
+            return inner
+
+        answer = re.sub(r'\u3010(.*?)\u3011', _extract_bracket, answer)
+
+        # STEP 4: Strip parenthetical PDF citations: (HR_Policy.pdf, Page 1, v1)
+        answer = re.sub(r'\s*\([^)]{0,80}\.pdf[^)]*\)', '', answer)
+
+        # STEP 5: Collapse multiple spaces and trim
+        answer = re.sub(r'[ \t]{2,}', ' ', answer).strip()
+
     # Add intent-specific metadata to the answer
     intent_labels = {
         "question": "📋 Document Q&A",

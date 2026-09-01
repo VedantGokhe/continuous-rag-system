@@ -140,10 +140,10 @@ export default function ChatPanel({ onResult }: ChatPanelProps) {
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-slide-up`}
             onClick={() => { if (msg.result) onResult(msg.result); }}
           >
-            <div className={`max-w-[75%] px-4 py-3 cursor-pointer ${
+            <div className={`px-5 py-4 cursor-pointer transition-all ${
               msg.role === 'user'
-                ? 'bubble-user'
-                : 'bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl rounded-bl-sm shadow-sm hover:shadow-md transition-shadow'
+                ? 'max-w-[80%] bubble-user'
+                : 'w-full max-w-[96%] bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl rounded-tl-sm shadow-sm hover:shadow-md'
             }`}>
               {/* Intent badge */}
               {msg.role === 'assistant' && msg.result && (

@@ -11,10 +11,10 @@ from app.agents.state import AgentState
 QA_PROMPT = """You are a helpful enterprise assistant. Answer the question based ONLY on the context below.
 
 Rules:
-- Be concise and direct
-- Cite the source document and page when possible (e.g., "According to HR_Policy.pdf, page 3...")
+- Be concise, direct, and complete. State all specific facts, numbers, and limits in plain text.
+- Do NOT use bracket citations like 【...】 or inline file tags like (filename.pdf, page X). Write clean natural prose.
 - If the context doesn't contain enough information, say "I don't have enough information in the indexed documents to answer this."
-- Do NOT make up information
+- Do NOT make up information.
 
 Context:
 {context}
@@ -69,6 +69,27 @@ def retriever_node(state: AgentState) -> AgentState:
             max_tokens=600,
         )
         answer = response.choices[0].message.content.strip()
+        import re
+        # STEP 1: Normalize ALL unicode spaces → ASCII space
+        answer = re.sub(r'[\u00a0\u202f\u2000-\u200b\u3000]+', ' ', answer)
+        # STEP 2: Normalize ALL unicode dashes → ASCII hyphen
+        answer = re.sub(r'[\u2011\u2012\u2013\u2014\u2015\u2212]', '-', answer)
+        # STEP 3: Smart bracket extractor 【value - source】
+        def _extract_bracket(m):
+            inner = m.group(1).strip()
+            match = re.search(r'^(.*?)\s*[\u2011-\u2015\u2212\-,;]\s*[A-Za-z0-9_\-]+\.pdf.*$', inner, flags=re.IGNORECASE)
+            if match:
+                val = match.group(1).strip()
+                if val and not val.lower().endswith('.pdf'):
+                    return val
+            if re.match(r'^[A-Za-z0-9_\-]+\.pdf', inner, flags=re.IGNORECASE):
+                return ''
+            return inner
+        answer = re.sub(r'\u3010(.*?)\u3011', _extract_bracket, answer)
+        # STEP 4: Strip parenthetical PDF citations
+        answer = re.sub(r'\s*\([^)]{0,80}\.pdf[^)]*\)', '', answer)
+        # STEP 5: Collapse multiple spaces
+        answer = re.sub(r'[ \t]{2,}', ' ', answer).strip()
         trace.append("RETRIEVER: Generated answer via LLM")
     except Exception as e:
         logger.error("LLM generation failed: %s", e)

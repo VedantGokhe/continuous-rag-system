@@ -10,6 +10,8 @@ export default function Header({ darkMode, onToggleTheme }: HeaderProps) {
   const [status, setStatus] = useState<any>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalResult, setEvalResult] = useState<any>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchStatus = async () => {
@@ -24,6 +26,26 @@ export default function Header({ darkMode, onToggleTheme }: HeaderProps) {
     const interval = setInterval(fetchStatus, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleRunEval = async () => {
+    setEvalRunning(true);
+    try {
+      const res = await runEvaluation();
+      setEvalResult(res);
+      setShowModal(true);
+      setExpandedRow(null);
+    } catch (err: any) {
+      alert(`Eval failed: ${err.message}`);
+    }
+    setEvalRunning(false);
+  };
+
+  const scoreColor = (val: number, invert = false) => {
+    const v = invert ? 1 - val : val;
+    if (v >= 0.7) return 'text-emerald-400';
+    if (v >= 0.4) return 'text-amber-400';
+    return 'text-red-400';
+  };
 
   return (
     <header className="gradient-header px-8 py-4 flex items-center justify-between shadow-lg">
@@ -74,16 +96,7 @@ export default function Header({ darkMode, onToggleTheme }: HeaderProps) {
 
         {/* RAG Eval button */}
         <button
-          onClick={async () => {
-            setEvalRunning(true);
-            try {
-              const res = await runEvaluation();
-              setEvalResult(res);
-            } catch (err: any) {
-              alert(`Eval failed: ${err.message}`);
-            }
-            setEvalRunning(false);
-          }}
+          onClick={handleRunEval}
           disabled={evalRunning}
           className="flex items-center gap-2 bg-gradient-to-r from-amber-500/20 to-orange-500/20 px-4 py-2 rounded-lg text-amber-300 text-sm font-bold border border-amber-500/30 hover:from-amber-500/30 hover:to-orange-500/30 transition-all disabled:opacity-50"
         >
@@ -93,6 +106,17 @@ export default function Header({ darkMode, onToggleTheme }: HeaderProps) {
             <>🧪 Eval</>
           )}
         </button>
+
+        {/* "View Report" button — only visible after an eval has run */}
+        {evalResult && (
+          <button
+            onClick={() => { setShowModal(true); setExpandedRow(null); }}
+            className="flex items-center gap-2 bg-gradient-to-r from-violet-500/20 to-indigo-500/20 px-4 py-2 rounded-lg text-violet-300 text-sm font-bold border border-violet-500/30 hover:from-violet-500/30 hover:to-indigo-500/30 transition-all animate-fade-in"
+            title="View last evaluation report"
+          >
+            📊 Report
+          </button>
+        )}
 
         {/* Professional Theme Toggle — pill switch */}
         <div className="flex items-center bg-white/10 rounded-lg p-1">
@@ -119,48 +143,64 @@ export default function Header({ darkMode, onToggleTheme }: HeaderProps) {
         </div>
       </div>
 
-      {/* Eval Results Modal */}
-      {evalResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in" onClick={() => setEvalResult(null)}>
-          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-[90vw] max-w-4xl max-h-[85vh] flex flex-col animate-slide-up" onClick={(e) => e.stopPropagation()}>
+      {/* ── Eval Results Modal ── */}
+      {showModal && evalResult && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            className="bg-slate-900 rounded-2xl shadow-2xl w-[92vw] max-w-5xl max-h-[88vh] flex flex-col border border-slate-700 animate-slide-up"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Modal Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-slate-700">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
               <div className="flex items-center gap-3">
                 <span className="text-xl">🧪</span>
                 <div>
-                  <h2 className="text-lg font-bold text-gray-800 dark:text-white">RAG Evaluation Report</h2>
-                  <p className="text-xs text-gray-400">{evalResult.summary?.total_tests} test cases evaluated</p>
+                  <h2 className="text-lg font-bold text-white">RAG Evaluation Report</h2>
+                  <p className="text-xs text-slate-400">
+                    {evalResult.summary?.total_tests} test cases · {evalResult.summary?.judge_model} · avg latency {evalResult.summary?.avg_latency_ms}ms
+                  </p>
                 </div>
               </div>
-              <button onClick={() => setEvalResult(null)} className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-slate-800 flex items-center justify-center hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-500 hover:text-red-600 transition-colors">✕</button>
+              <button
+                onClick={() => setShowModal(false)}
+                className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center hover:bg-red-900/40 text-slate-400 hover:text-red-400 transition-colors"
+              >
+                ✕
+              </button>
             </div>
 
             {/* Summary Cards */}
-            <div className="px-6 py-4 grid grid-cols-4 gap-3 border-b border-gray-100 dark:border-slate-800">
+            <div className="px-6 py-4 grid grid-cols-4 gap-3 border-b border-slate-800">
               {[
                 { label: 'Overall', value: evalResult.summary?.overall_score, color: 'blue' },
                 { label: 'Faithfulness', value: evalResult.summary?.avg_faithfulness, color: 'emerald' },
                 { label: 'Relevancy', value: evalResult.summary?.avg_relevancy, color: 'purple' },
                 { label: 'Hallucination', value: evalResult.summary?.avg_hallucination, color: 'red', invert: true },
               ].map((m) => (
-                <div key={m.label} className={`rounded-xl p-3 text-center bg-${m.color}-50 dark:bg-${m.color}-900/20 border border-${m.color}-200 dark:border-${m.color}-800`}>
-                  <p className="text-xs font-semibold text-gray-500 dark:text-slate-400">{m.label}</p>
-                  <p className={`text-2xl font-bold mt-1 ${
-                    (m.invert ? (1 - (m.value || 0)) : (m.value || 0)) >= 0.7 ? 'text-emerald-600 dark:text-emerald-400' :
-                    (m.invert ? (1 - (m.value || 0)) : (m.value || 0)) >= 0.4 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
-                  }`}>
+                <div
+                  key={m.label}
+                  className="rounded-xl p-3 text-center bg-slate-800/60 border border-slate-700"
+                >
+                  <p className="text-xs font-semibold text-slate-400">{m.label}</p>
+                  <p className={`text-2xl font-bold mt-1 ${scoreColor(m.value || 0, m.invert)}`}>
                     {((m.value || 0) * 100).toFixed(0)}%
                   </p>
                 </div>
               ))}
             </div>
 
-            {/* Per-test Results */}
+            {/* Per-test Results Table */}
             <div className="flex-1 overflow-y-auto px-6 py-4">
+              <p className="text-xs text-slate-500 mb-3">
+                💡 Click any row to see the <span className="text-violet-400 font-semibold">RAG answer</span> vs the <span className="text-emerald-400 font-semibold">expected answer</span>
+              </p>
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-xs text-gray-400 dark:text-slate-500 uppercase">
-                    <th className="text-left py-2">Query</th>
+                  <tr className="text-xs text-slate-500 uppercase">
+                    <th className="text-left py-2 pr-2">Query</th>
                     <th className="text-center">Faith</th>
                     <th className="text-center">Relev</th>
                     <th className="text-center">Correct</th>
@@ -171,15 +211,85 @@ export default function Header({ darkMode, onToggleTheme }: HeaderProps) {
                 </thead>
                 <tbody>
                   {evalResult.results?.map((r: any, i: number) => (
-                    <tr key={i} className="border-t border-gray-100 dark:border-slate-800">
-                      <td className="py-2 text-gray-700 dark:text-slate-300 max-w-xs truncate">{r.query}</td>
-                      <td className="text-center font-bold text-emerald-600 dark:text-emerald-400">{(r.scores?.faithfulness * 100).toFixed(0)}%</td>
-                      <td className="text-center font-bold text-purple-600 dark:text-purple-400">{(r.scores?.relevancy * 100).toFixed(0)}%</td>
-                      <td className="text-center font-bold text-blue-600 dark:text-blue-400">{(r.scores?.correctness * 100).toFixed(0)}%</td>
-                      <td className={`text-center font-bold ${r.scores?.hallucination <= 0.2 ? 'text-emerald-600' : 'text-red-600'}`}>{(r.scores?.hallucination * 100).toFixed(0)}%</td>
-                      <td className="text-center">{r.correct_source ? '✅' : '❌'}</td>
-                      <td className="text-right text-gray-400 dark:text-slate-500">{r.latency_ms}ms</td>
-                    </tr>
+                    <>
+                      {/* ── Summary Row ── */}
+                      <tr
+                        key={`row-${i}`}
+                        className={`border-t border-slate-800 cursor-pointer transition-colors ${
+                          expandedRow === i ? 'bg-slate-800/60' : 'hover:bg-slate-800/40'
+                        }`}
+                        onClick={() => setExpandedRow(expandedRow === i ? null : i)}
+                      >
+                        <td className="py-2.5 pr-2 text-slate-300 max-w-xs">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs transition-transform duration-200 ${expandedRow === i ? 'rotate-90' : ''}`}>▶</span>
+                            <span className="truncate">{r.query}</span>
+                          </div>
+                        </td>
+                        <td className={`text-center font-bold ${scoreColor(r.scores?.faithfulness)}`}>
+                          {(r.scores?.faithfulness * 100).toFixed(0)}%
+                        </td>
+                        <td className={`text-center font-bold ${scoreColor(r.scores?.relevancy)}`}>
+                          {(r.scores?.relevancy * 100).toFixed(0)}%
+                        </td>
+                        <td className={`text-center font-bold ${scoreColor(r.scores?.correctness)}`}>
+                          {(r.scores?.correctness * 100).toFixed(0)}%
+                        </td>
+                        <td className={`text-center font-bold ${scoreColor(r.scores?.hallucination, true)}`}>
+                          {(r.scores?.hallucination * 100).toFixed(0)}%
+                        </td>
+                        <td className="text-center">
+                          {r.correct_source
+                            ? <span className="text-emerald-400">✅</span>
+                            : <span className="text-red-400">❌</span>}
+                        </td>
+                        <td className="text-right text-slate-500">{r.latency_ms}ms</td>
+                      </tr>
+
+                      {/* ── Expanded Detail Row ── */}
+                      {expandedRow === i && (
+                        <tr key={`detail-${i}`} className="bg-slate-800/50">
+                          <td colSpan={7} className="px-4 pb-4 pt-2">
+                            <div className="grid grid-cols-2 gap-3">
+
+                              {/* RAG Answer */}
+                              <div className="rounded-xl border border-violet-500/30 bg-violet-900/10 p-3">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="w-2 h-2 rounded-full bg-violet-400"></span>
+                                  <p className="text-xs font-bold text-violet-400 uppercase tracking-wide">RAG System Response</p>
+                                </div>
+                                <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+                                  {r.actual || <span className="italic text-slate-500">No response</span>}
+                                </p>
+                              </div>
+
+                              {/* Expected Answer */}
+                              <div className="rounded-xl border border-emerald-500/30 bg-emerald-900/10 p-3">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                  <p className="text-xs font-bold text-emerald-400 uppercase tracking-wide">Expected Correct Answer</p>
+                                </div>
+                                <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+                                  {r.expected}
+                                </p>
+                              </div>
+
+                            </div>
+
+                            {/* Judge Reasoning */}
+                            {r.scores?.reasoning && (
+                              <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-900/10 p-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                                  <p className="text-xs font-bold text-amber-400 uppercase tracking-wide">Judge Reasoning</p>
+                                </div>
+                                <p className="text-xs text-slate-300 leading-relaxed">{r.scores.reasoning}</p>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </>
                   ))}
                 </tbody>
               </table>
